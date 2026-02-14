@@ -3,16 +3,21 @@ This module can be used to solve column displacement problems
 using singularity functions in mechanics.
 """
 
-from sympy import nsimplify, simplify
+from sympy import nsimplify, simplify, S
 from sympy.core import Symbol, symbols
+from sympy.core.expr import Expr
 from sympy.core.relational import Eq
 from sympy.core.sympify import sympify
+from sympy.external import import_module
 from sympy.functions import SingularityFunction, factorial
 from sympy.integrals import integrate
 from sympy.plotting import plot
 from sympy.printing import sstr
 from sympy.series import limit
 from sympy.solvers import linsolve
+from sympy.utilities.lambdify import lambdify
+
+numpy = import_module('numpy', import_kwargs={'fromlist': ['arange']})
 
 class Column:
     """
@@ -711,3 +716,265 @@ class Column:
         """
         return plot(self.extension(), (self.variable, 0, self.length), title='Extension',
                 xlabel=r'$\mathrm{x}$', ylabel=r'$\mathrm{u(x)}$', line_color='b')
+
+    def draw(self, pictorial=True):
+        """
+        Returns a plot object representing a clean, professional schematic 
+        diagram of the column.
+
+        The diagram shows:
+
+        * **Column**: Thin horizontal member (neutral brown).
+        * **Loads**: Horizontal arrows along the axis.
+          
+          - Compression (←) moves left (red/warm tones)
+          - Tension (→) moves right (blue/cool tones)
+          
+        * **Distributed loads**: Light shaded strip along the axis with 
+          sparse directional indicators.
+        * **Supports**: Small, subtle hatched blocks with minimal visual weight.
+
+        For a typical horizontal column:
+        
+        - Positive loads → tension (points right, blue)
+        - Negative loads → compression (points left, red)
+
+        Parameters
+        ==========
+
+        pictorial: Boolean (default=True)
+            If ``True``, creates a scaled/diagrammatic view.
+            If ``False``, attempts to show true load magnitudes (where possible).
+
+        Examples
+        ========
+
+        .. plot::
+            :context: close-figs
+            :format: doctest
+            :include-source: True
+
+            >>> from sympy.physics.continuum_mechanics.column import Column
+            >>> c = Column(10, 210000, 1)
+            >>> c.apply_support(0)
+            >>> c.apply_support(10)
+            >>> c.apply_load(10, 5, -1)    # Tension
+            >>> c.apply_load(-5, 7, -1)    # Compression
+            >>> c.draw()  # doctest: +SKIP
+            Plot object containing:
+            [0]: cartesian line: ...
+        """
+        if numpy is None:
+            raise ImportError("NumPy required for drawing")
+
+        x = self.variable
+
+        # Handle symbolic length with defaults
+        if isinstance(self.length, Expr):
+            l = list(self.length.atoms(Symbol))
+            l = dict.fromkeys(l, 10)
+            length = self.length.subs(l)
+        else:
+            l = {}
+            length = float(self.length)
+        
+        # Thin, clean column profile
+        height = length / 25
+        
+        # Column body: thin, neutral, minimal visual weight
+        rectangles = []
+        rectangles.append({
+            'xy': (0, -height/2), 
+            'width': length, 
+            'height': height, 
+            'facecolor': "#8b6f47",      # Muted brown
+            'edgecolor': '#333333',      # Dark gray
+            'linewidth': 0.8
+        })
+
+        # Draw loads and supports with normalized styling
+        annotations, rectangles_dist = self._draw_load(length, l, height)
+        support_markers, support_rects = self._draw_supports(length, l, height)
+
+        rectangles += rectangles_dist + support_rects
+
+        # Clean axis plot
+        sing_plot = plot(0, (x, 0, length),
+            xlim=(-height*4, length + height*4), 
+            ylim=(-length/5, length/5),
+            annotations=annotations, 
+            markers=support_markers, 
+            rectangles=rectangles,
+            axis=False, 
+            show=False)
+
+        return sing_plot
+
+    def _is_load_negative(self, load):
+        """Try to determine if a load is negative or positive.
+
+        Returns
+        =======
+        True: if the load is negative
+        False: if the load is positive
+        None: if it is indeterminate
+        """
+        rv = load.is_negative
+        if load.is_Atom or rv is not None:
+            return rv
+        return load.doit().expand().is_negative
+
+    def _draw_load(self, length, l, height):
+        """
+        Draw axial loads with clean, professional styling.
+        
+        - Compression: arrows point left (warm tones)
+        - Tension: arrows point right (cool tones)
+        - Distributed: light axial strip with sparse indicators
+        """
+        annotations = []
+        rectangles = []
+
+        for load in self._applied_loads:
+            # Parse load position and parameters
+            if l:
+                pos = float(load[1].subs(l))
+            else:
+                pos = float(load[1])
+
+            value = load[0]
+            order = load[2]
+            end = load[3] if len(load) > 3 else None
+            if end and l:
+                end = float(end.subs(l))
+            elif end:
+                end = float(end)
+
+            # === POINT LOAD (order = -1) ===
+            if order == -1:
+                is_negative = self._is_load_negative(value)
+                
+                # Normalized standard arrow properties
+                arrow_base = height * 1.0  # Consistent offset distance
+                head_size = 5.5             # Large head dimensions for better visibility
+                
+                if is_negative:
+                    # COMPRESSION: warm color (reddish), arrow points LEFT
+                    annotations.append({
+                        'text': '',
+                        'xy': (pos, 0),
+                        'xytext': (pos - arrow_base, 0),
+                        'arrowprops': {
+                            'width': 1.8,
+                            'headlength': head_size,
+                            'headwidth': head_size,
+                            'facecolor': '#c85555',      # Desaturated warm red
+                            'edgecolor': '#8b4545',      # Darker companion
+                            'linewidth': 1.0
+                        }
+                    })
+                else:
+                    # TENSION: cool color (bluish), arrow points RIGHT
+                    annotations.append({
+                        'text': '',
+                        'xy': (pos, 0),
+                        'xytext': (pos + arrow_base, 0),
+                        'arrowprops': {
+                            'width': 1.8,
+                            'headlength': head_size,
+                            'headwidth': head_size,
+                            'facecolor': '#5588bb',      # Desaturated cool blue
+                            'edgecolor': '#445588',      # Darker companion
+                            'linewidth': 1.0
+                        }
+                    })
+
+            # === DISTRIBUTED LOAD (order >= 0) ===
+            elif order >= 0:
+                start = pos
+                end_pos = end if end else length
+                is_negative = self._is_load_negative(value)
+                
+                region_length = end_pos - start
+                
+                # Light axial shading strip (minimal visual weight)
+                rect_height = height * 0.35
+                rect_y = -rect_height / 2
+                
+                rectangles.append({
+                    'xy': (start, rect_y),
+                    'width': region_length,
+                    'height': rect_height,
+                    'facecolor': '#f5d5d5' if is_negative else '#d5e8f5',  # Very pale
+                    'alpha': 0.6,
+                    'edgecolor': '#8b4545' if is_negative else '#445588',  # Match point load color
+                    'linewidth': 0.6,
+                    'hatch': None  # Clean, no hatch pattern
+                })
+                
+                # Sparse directional indicators (max 2 arrows for cleanliness)
+                num_indicators = min(2, max(1, int(region_length / (length * 0.4))))
+                indicator_positions = numpy.linspace(
+                    start + region_length * 0.15,
+                    end_pos - region_length * 0.15,
+                    num_indicators
+                )
+                
+                # Indicator arrows for distributed loads
+                indicator_offset = height * 0.5
+                for ind_pos in indicator_positions:
+                    annotations.append({
+                        'text': '',
+                        'xy': (ind_pos, 0),
+                        'xytext': (ind_pos + (indicator_offset if not is_negative else -indicator_offset), 0),
+                        'arrowprops': {
+                            'width': 1.2,
+                            'headlength': 4.5,
+                            'headwidth': 4.5,
+                            'facecolor': '#c85555' if is_negative else '#5588bb',
+                            'edgecolor': '#8b4545' if is_negative else '#445588',
+                            'alpha': 0.6,
+                            'linewidth': 0.9
+                        }
+                    })
+
+        return annotations, rectangles
+
+    def _draw_supports(self, length, l, height):
+        """
+        Draw support markers with minimal visual weight.
+        
+        Supports are subtle (light fill + thin outline) so the focus 
+        remains on the loads and structural response.
+        """
+        support_markers = []
+        support_rectangles = []
+
+        for support_loc in self._bc_extension:
+            if l:
+                pos = float(support_loc.subs(l))
+            else:
+                pos = float(support_loc)
+
+            # Minimal support block: thin, light, unobtrusive
+            support_rectangles.append({
+                'xy': (pos - height*0.2, -height*0.6),
+                'width': height*0.4,
+                'height': height*1.2,
+                'fill': True,
+                'facecolor': '#efefef',        # Very light gray
+                'edgecolor': '#666666',        # Medium gray
+                'linewidth': 0.6,
+                'hatch': None                  # Clean, no pattern
+            })
+
+            # Small axial marker at support location
+            support_markers.append({
+                'args': [[pos], [0]],
+                'marker': '|',
+                'markersize': 10,
+                'color': '#666666',
+                'markeredgewidth': 0.8
+            })
+
+        return support_markers, support_rectangles
